@@ -1,6 +1,7 @@
 version: "3"
 
 services:
+
   redpanda:
     image: vectorized/redpanda:v22.3.11
     container_name: redpanda
@@ -66,6 +67,13 @@ services:
         #
         echo "Installing connector plugins"
         confluent-hub install --no-prompt tabular/iceberg-kafka-connect:0.4.11
+        confluent-hub install --no-prompt dariobalinzo/kafka-connect-elasticsearch-source:1.5.5
+        confluent-hub install --no-prompt confluentinc/kafka-connect-jdbc:10.0.0
+        confluent-hub install --no-prompt mongodb/kafka-connect-mongodb:1.11.1
+        confluent-hub install --no-prompt debezium/debezium-connector-sqlserver:latest
+        confluent-hub install --no-prompt debezium/debezium-connector-postgresql:latest
+        confluent-hub install --no-prompt confluentinc/kafka-connect-hdfs3-source:2.5.0
+        confluent-hub install --no-prompt confluentinc/kafka-connect-s3-source:latest
         #
         echo "Launching Kafka Connect worker"
         /etc/confluent/docker/run & 
@@ -142,6 +150,8 @@ services:
       default:
         aliases:
           - warehouse.minio
+    volumes:
+      - ./minio-data:/data
     ports:
       - 9001:9001
       - 9000:9000
@@ -160,53 +170,48 @@ services:
     depends_on: 
       - minio
 
-  spark-iceberg:
-    image: tabulario/spark-iceberg
-    hostname: spark-iceberg
-    container_name: spark-iceberg
-    build: spark/
-    depends_on:
-      - rest
-      - minio
-    environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_REGION: eu-west-1
-      SPARK_DEFAULTS: |
-        spark.sql.extensions                    org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
-        spark.sql.catalog.iceberg               org.apache.iceberg.spark.SparkCatalog
-        spark.sql.catalog.iceberg.catalog-impl  org.apache.iceberg.rest.RESTCatalog
-        spark.sql.catalog.iceberg.uri           http://rest:8181
-        spark.sql.catalog.iceberg.io-impl       org.apache.iceberg.aws.s3.S3FileIO
-        spark.sql.catalog.iceberg.warehouse     s3://warehouse/wh/
-        spark.sql.catalog.iceberg.s3.endpoint   http://minio:9000
-        spark.sql.defaultCatalog                iceberg
-        spark.sql.catalogImplementation         in-memory
-        spark.eventLog.enabled                  true
-        spark.eventLog.dir                      /home/iceberg/spark-events
-        spark.history.fs.logDirectory           /home/iceberg/spark-events
-        spark.jars.packages                     org.apache.hadoop:hadoop-aws:3.2.0
-    ports:
-      - 8888:8888
-      - 8080:8080
-      - 10000:10000
-      - 10001:10001
-    volumes:
-      - ./spark:/home/iceberg/scripts
-      - ./notebooks:/home/iceberg/notebooks/notebooks
-    command: ["echo \"$$SPARK_DEFAULTS\" > /opt/spark/conf/spark-defaults.conf && spark-submit /home/iceberg/scripts/create_table.py && notebook"]
-
   rest:
     image: tabulario/iceberg-rest
     hostname: rest
     container_name: rest
     ports:
       - 8181:8181
+    volumes:
+      - ./iceberg-metadata:/tmp
     environment:
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin
       - AWS_REGION=eu-west-1
-      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_WAREHOUSE=s3a://warehouse/
       - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
       - CATALOG_S3_ENDPOINT=http://minio:9000
       - CATALOG_S3_PATH__STYLE__ACCESS=True
+
+  trino:
+    container_name: trino
+    ports:
+      - "8080:8080"
+    image: "trinodb/trino:430"
+    restart: always
+    volumes:
+      - ./docker/trino/etc:/usr/lib/trino/etc:ro
+      - ./docker/trino/catalog:/etc/trino/catalog
+
+  spark-iceberg:
+    image: tabulario/spark-iceberg
+    container_name: spark-iceberg
+    depends_on:
+      - rest
+      - minio
+    volumes:
+      - ./warehouse:/home/iceberg/warehouse
+      - ./notebooks:/home/iceberg/notebooks/notebooks
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    ports:
+      - 8888:8888
+      - 8088:8080
+      - 10000:10000
+      - 10001:10001
